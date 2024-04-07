@@ -29,6 +29,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #define MAX_NUM_CPUS 256
@@ -231,7 +232,8 @@ static inline void get_gpu_info(struct gpu_record *gpu) {
     gpu->gpu[i].gpu_mem_free = str_to_u32(gpu_mem_free, &err);
     gpu->gpu[i].gpu_mem_used_percentage =
         100.0 *
-        ((float)gpu->gpu[i].gpu_mem_used / (float)gpu->gpu[i].gpu_mem_total);
+        ((float)gpu->gpu[i].gpu_mem_used /
+         (float)gpu->gpu[i].gpu_mem_total); // Leave as nan if no gpu mem
     gpu->gpu[i].gpu_graphics_clock = str_to_u32(gpu_graphics_clock, &err);
     gpu->gpu[i].gpu_mem_clock = str_to_u32(gpu_mem_clock, &err);
     gpu->gpu[i].gpu_video_clock = str_to_u32(gpu_video_clock, &err);
@@ -413,7 +415,9 @@ static inline void get_mem_info(mem_record *mem) {
   // Calculate other fields
   mem->mem_used = mem->mem_total - mem->mem_free;
   mem->swp_used = mem->swp_total - mem->swp_free;
-  mem->mem_percentage = 100.0 * ((float)mem->mem_used / (float)mem->mem_total);
+  mem->mem_percentage =
+      100.0 * ((float)mem->mem_used /
+               (float)mem->mem_total); // Leave as NaN if no mem or swp
   mem->swp_percentage = 100.0 * ((float)mem->swp_used / (float)mem->swp_total);
 }
 
@@ -439,8 +443,14 @@ static inline float *calculate_cpu_utilization(cpu_record *prev,
     uint32_t prev_total = prev_idle + prev_non_idle;
     uint32_t current_total = current_idle + current_non_idle;
 
-    utilization[i] = 100.0 * (1.0 - (float)(current_idle - prev_idle) /
-                                        (float)(current_total - prev_total));
+    uint32_t idle_diff = current_idle - prev_idle;
+    uint32_t total_diff = current_total - prev_total;
+
+    int nancheck = total_diff == 0;
+    float ratio_idle = (float)idle_diff / ((float)total_diff + nancheck);
+    float percent_active =
+        +(1.0 - ratio_idle) * 100; // Always positive to avoid signed zero.
+    utilization[i] = percent_active * !nancheck;
   }
 
   avg_utilization = 0;
