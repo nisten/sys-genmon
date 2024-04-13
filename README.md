@@ -4,7 +4,7 @@
   
 ## A very pretty system monitor for xfce4-genmon
 
-<img src='genmon_bars.png' height=108 style='image-rendering: pixelated;'>
+<img src='genmon_bars.png'>
 
 | Color              | Meaning                |
 | ------------------ | ---------------------- |
