@@ -4,7 +4,7 @@
   
 ## A very pretty system monitor for xfce4-genmon
 
-<img src='genmon_bars.png' height=108>
+<img src='genmon_bars.png' height=108 image-rendering='pixelated'>
 
 | Color              | Meaning                |
 | ------------------ | ---------------------- |
@@ -14,7 +14,7 @@
 | Green              | GPU SM Utilization     |
 | Yellow-Green       | GPU memory utilization |
 
-Only Nvidia GPUs are supported at the moment, as I don't have one to test with. The color would be red :). Contributions welcome.
+Only Nvidia GPUs are supported at the moment, as I don't have one to test with. AMD would be red :). Contributions welcome.
 
 </div>
 
