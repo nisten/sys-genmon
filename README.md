@@ -6,11 +6,15 @@
 
 <img src='genmon_bars.png' height=108>
 
-* Blue (alternating): CPU core utilization
-* Yellow: CPU Memory utilization
-* Purple: Swap utilization
-* Green: CPU frequency
-* Yellow-Green: GPU memory utilization
+| Color              | Meaning                |
+| ------------------ | ---------------------- |
+| Blue (alternating) | CPU core utilization   |
+| Yellow             | CPU memory utilization |
+| Purple             | Swap utilization       |
+| Green              | GPU SM Utilization     |
+| Yellow-Green       | GPU memory utilization |
+
+Only Nvidia GPUs are supported at the moment, as I don't have one to test with. The color would be red :). Contributions welcome.
 
 </div>
 
