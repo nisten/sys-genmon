@@ -1,10 +1,18 @@
 # sys-genmon
-A very pretty system monitor for xfce4-genmon
 
 <div align='center'>
-<img src='genmon_bars.png' height=108>
-</div>
+  
+## A very pretty system monitor for xfce4-genmon
 
+<img src='genmon_bars.png' height=108>
+
+* Blue (alternating): CPU core utilization
+* Yellow: CPU Memory utilization
+* Purple: Swap utilization
+* Green: CPU frequency
+* Yellow-Green: GPU memory utilization
+
+</div>
 
 ## Installation
 
