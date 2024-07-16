@@ -34,15 +34,24 @@
 
 #define MAX_NUM_CPUS 256
 #define MAX_NUM_GPUS 8
-#define PAGE_SIZE 4096
 
 #define SVG_BAR_WIDTH 3,
+
+#define ANSI_COLOR_RED "\x1b[31m"
+#define ANSI_COLOR_GREEN "\x1b[32m"
+#define ANSI_COLOR_YELLOW "\x1b[33m"
+#define ANSI_COLOR_BLUE "\x1b[34m"
+#define ANSI_COLOR_MAGENTA "\x1b[35m"
+#define ANSI_COLOR_CYAN "\x1b[36m"
+#define ANSI_COLOR_RESET "\x1b[0m"
 
 #define CPU_COLORS "#3498DB", "#2471A3"
 #define GPU_COLORS "#76B900", "#27AE60"
 #define MEM_COLOR "#F1C40F"
 #define SWP_COLOR "#8E44AD"
 #define VRAM_COLOR "#BADC00"
+
+#define PAGE_SIZE 4096
 
 static const char *tmp_svg = "/tmp/sys-genmon.svg";
 static const char *shm_name = "/genmon_shmem";
@@ -147,6 +156,46 @@ static inline int starts_with(char *s, char *start) {
   return 1;
 }
 
+static inline char *get_cpu_name(void) {
+  static char cpu_name[4096];
+  if (cpu_name[0])
+    return cpu_name;
+
+  FILE *f = fopen("/proc/cpuinfo", O_RDONLY);
+  if (!f)
+    puts("Failed to open /proc/cpuinfo."), exit(1);
+
+// Read the first few thousand bytes. The CPU name should be in there.
+#define CPU_NAME_BUFSZ 4096
+  ssize_t n_read = fread(cpu_name, CPU_NAME_BUFSZ, 1, f);
+  if (n_read == -1)
+    puts("Failed to read /proc/cpuinfo."), exit(1);
+
+  fclose(f);
+
+  // Find model name field, skip to content.
+  // If it can't be found, return "Unknown CPU".
+  char *p = strstr(cpu_name, "model name");
+  if (!p) {
+    sprintf(cpu_name, "Unknown CPU");
+    return cpu_name;
+  }
+
+  while (*p != ':')
+    p++;
+  p += 2;
+
+  // Get size of content, overwrite
+  char *q = p;
+  while (*q != '\n')
+    q++;
+  int n = q - p;
+  memmove(cpu_name, p, n);
+  cpu_name[n] = '\0';
+
+  return cpu_name;
+}
+
 static inline char *read_memitem(char *p, char *title, uint32_t *item) {
   if (!*p) {
     puts("Failed to parse /proc/meminfo. Ran out of input."), exit(1);
@@ -182,14 +231,16 @@ static inline char *next_gpu_item(char *line) {
 }
 
 static inline void get_gpu_info(struct gpu_record *gpu) {
+  gpu->num_gpus = 0;
+
   FILE *fp = popen(nvsmi_cmd, "r");
   if (!fp)
-    puts("Failed to open nvidia-smi"), exit(1);
+    perror("Failed to popen nvidia-smi"), exit(1);
 
   // Read the line into a big static buffer.
   char nvsmi_contents[PAGE_SIZE];
   if (!fgets(nvsmi_contents, sizeof(nvsmi_contents), fp))
-    puts("Failed to read from nvidia-smi"), exit(1);
+    perror("Failed to read from nvidia-smi"), exit(1);
 
   pclose(fp);
 
@@ -369,12 +420,11 @@ static inline void get_mem_info(mem_record *mem) {
   fclose(fp);
   meminfo_contents[n_read] = '\0';
 
-  typedef struct {
+  // Unrolled by gcc/clang
+  struct {
     char *name;
     uint32_t *field;
-  } memitem;
-
-  memitem items[] = {
+  } items[] = {
       {"MemTotal:", &mem->mem_total},
       {"MemAvailable:", &mem->mem_free},
       {"SwapTotal:", &mem->swp_total},
@@ -461,14 +511,7 @@ static inline float *calculate_cpu_utilization(cpu_record *prev,
   return utilization;
 }
 
-static inline cpu_record *get_prev_cpu_info(int persist) {
-
-  if (!persist) {
-    static cpu_record prev_cpu_info;
-    get_cpu_info(&prev_cpu_info);
-    return &prev_cpu_info;
-  }
-
+static inline cpu_record *get_prev_cpu_info() {
   const size_t psm1 = PAGE_SIZE - 1;
   const size_t shm_size = (sizeof(cpu_record) + 1 + psm1) & ~psm1;
 
@@ -495,9 +538,8 @@ static inline cpu_record *get_prev_cpu_info(int persist) {
   return (cpu_record *)shm_contents;
 }
 
-static inline void save_cpu_shm(cpu_record *cpu, int persist) {
-  if (persist)
-    memcpy(shm_contents, cpu, sizeof(cpu_record));
+static inline void save_cpu_shm(cpu_record *cpu) {
+  memcpy(shm_contents, cpu, sizeof(cpu_record));
 }
 
 // Print results
@@ -505,15 +547,21 @@ static inline void save_cpu_shm(cpu_record *cpu, int persist) {
 #define PRN(...) buf_len += sprintf(buf + buf_len, __VA_ARGS__)
 
 static inline size_t print_cpu_utilization(size_t num_cpus, char *buf,
-                                           size_t buf_len, int genmon) {
+                                           size_t buf_len, int genmon,
+                                           int bar) {
   if (genmon)
     PRN("<big><b><span weight='bold'>");
   PRN("CPU Utilization:");
   if (genmon)
     PRN("</span></b></big>");
   PRN("\n");
-  for (size_t i = 0; i < num_cpus; i++)
-    PRN("  CPU %zu: %.2f%%\n", i, utilization[i]);
+  for (size_t i = 0; i < num_cpus; i++) {
+    if (bar) {
+      PRN("  CPU %2zu: %2.0f%%\n", i, utilization[i]);
+    } else {
+      PRN("  CPU %2zu: %2.0f%%\n", i, utilization[i]);
+    }
+  }
   PRN("\n");
   return buf_len;
 }
@@ -619,7 +667,7 @@ static inline size_t print_click_text(char *buf, size_t buf_len, int img) {
   if (img) {
     // This is broken
     // https://gitlab.xfce.org/panel-plugins/xfce4-genmon-plugin/-/issues/30
-    // PRN("<click>xfce4-taskmanager</click>\n");
+    PRN("<click>xfce4-taskmanager</click>\n");
   } else {
     PRN("<txtclick>xfce4-taskmanager</txtclick>\n");
   }
@@ -628,7 +676,8 @@ static inline size_t print_click_text(char *buf, size_t buf_len, int img) {
 
 static inline size_t print_tooltip_text(char *buf, size_t buf_len, int genmon) {
   PRN("<tool><tt>\n");
-  buf_len = print_cpu_utilization(info.cpu_info.num_cpus, buf, buf_len, genmon);
+  buf_len =
+      print_cpu_utilization(info.cpu_info.num_cpus, buf, buf_len, genmon, 1);
   buf_len = print_cpu_mem_info(&info.mem_info, buf, buf_len, genmon);
   buf_len = print_swap_mem_info(&info.mem_info, buf, buf_len, genmon);
   buf_len = print_gpu_mem_info(&info.gpu_info, buf, buf_len, genmon);
@@ -655,7 +704,7 @@ static inline size_t print_svg_header(char *buf, size_t buf_len, size_t width,
                                       size_t height, int topdown) {
   char transform[256];
   *transform = '\0';
-  if (topdown)
+  if (!topdown)
     sprintf(transform, " transform='scale(1,-1) translate(0,-%zu)'", height);
   PRN("<svg width='%zu' height='%zu'%s><g>\n", width, height, transform);
   return buf_len;
@@ -669,13 +718,9 @@ static inline size_t print_svg_rects(char *buf, size_t buf_len) {
   size_t num_cpus = info.cpu_info.num_cpus;
   size_t num_gpus = info.gpu_info.num_gpus;
 
+  // CPU utilization
   const char *cpu_colors[] = {CPU_COLORS};
   const size_t num_cpu_colors = sizeof(cpu_colors) / sizeof(cpu_colors[0]);
-
-  const char *gpu_colors[] = {GPU_COLORS};
-  const size_t num_gpu_colors = sizeof(gpu_colors) / sizeof(gpu_colors[0]);
-
-  // CPU utilization
   for (size_t i = 0; i < num_cpus; i++) {
     PRN("<rect width='3' height='%zu%%' x='%zu' y='0' fill='%s' />\n",
         (size_t)utilization[i],
@@ -697,6 +742,8 @@ static inline size_t print_svg_rects(char *buf, size_t buf_len) {
   cols_printed++;
 
   // GPU utilization
+  const char *gpu_colors[] = {GPU_COLORS};
+  const size_t num_gpu_colors = sizeof(gpu_colors) / sizeof(gpu_colors[0]);
   for (size_t i = 0; i < num_gpus; i++) {
     PRN("<rect width='3' height='%zu%%' x='%zu' y='0' fill='%s' />\n",
         (size_t)info.gpu_info.gpu[i].gpu_sm_utilization,
@@ -730,7 +777,7 @@ static inline void write_svg_file(char *buf, size_t buf_len, int topdown) {
   width += info.gpu_info.num_gpus * 4; // gpu utilization
   width += info.gpu_info.num_gpus * 4; // vram
 
-  size_t height = 30;
+  size_t height = 28;
 
   buf_len = print_svg_header(buf, buf_len, width, height, topdown);
   buf_len = print_svg_rects(buf, buf_len);
@@ -755,10 +802,87 @@ static inline size_t print_svg(char *buf, size_t buf_len, int topdown) {
   return buf_len;
 }
 
+static inline size_t print_bar(char *buf, size_t buf_len, size_t length,
+                               float percent_full, const char *bracket_color,
+                               const char *fill_color) {
+  PRN("[");
+  size_t bar_width = length * (percent_full / 100);
+  for (int j = 0; j < length; j++) {
+    if (j < bar_width) {
+      PRN("#");
+    } else {
+      PRN(" ");
+    }
+  }
+  PRN("]");
+  return buf_len;
+}
+
+static inline size_t print_tui(char *buf, size_t buf_len) {
+  PRN("\033[2J\033[H"); // Clear screen and move cursor to top-left corner
+  PRN(ANSI_COLOR_CYAN "System Monitor\n" ANSI_COLOR_RESET);
+  PRN("==========================================\n\n");
+
+  // CPU Utilization
+  PRN(ANSI_COLOR_BLUE "CPU Utilization: " ANSI_COLOR_RESET "%.2f%%\n",
+      avg_utilization);
+  for (size_t i = 0; i < info.cpu_info.num_cpus; i++) {
+    PRN("  CPU %2zu: ", i);
+    buf_len = print_bar(buf, buf_len, 50, utilization[i] / 2, "", "");
+    PRN(" %.2f%%\n", utilization[i]);
+  }
+  PRN("\n");
+
+  // Memory Usage
+  PRN(ANSI_COLOR_YELLOW "Memory Usage: " ANSI_COLOR_RESET "%.2f%%\n",
+      info.mem_info.mem_percentage);
+  PRN("  Total: %u MB\n", info.mem_info.mem_total / 1024);
+  PRN("  Used:  %u MB\n", info.mem_info.mem_used / 1024);
+  PRN("  Free:  %u MB\n\n", info.mem_info.mem_free / 1024);
+
+  // Swap Usage
+  PRN(ANSI_COLOR_MAGENTA "Swap Usage: " ANSI_COLOR_RESET "%.2f%%\n",
+      info.mem_info.swp_percentage);
+  PRN("  Total: %u MB\n", info.mem_info.swp_total / 1024);
+  PRN("  Used:  %u MB\n", info.mem_info.swp_used / 1024);
+  PRN("  Free:  %u MB\n\n", info.mem_info.swp_free / 1024);
+
+  // GPU Information
+  if (info.gpu_info.num_gpus == 1) {
+    struct gpu_instance *g = &info.gpu_info.gpu[0];
+    PRN(ANSI_COLOR_GREEN "GPU Information:" ANSI_COLOR_RESET "\n");
+    PRN("  Name: %s\n", g->gpu_name);
+    PRN("  SM Utilization:     %u%%\n", g->gpu_sm_utilization);
+    PRN("  Memory Usage:    %.2f%% (%u MB / %u MB)\n",
+        g->gpu_mem_used_percentage, g->gpu_mem_used / 1024,
+        g->gpu_mem_total / 1024);
+    PRN("  Temperature:     %u°C\n", g->gpu_temp);
+    PRN("  Power Draw:      %u W\n", g->gpu_power_draw / 1000);
+    PRN("\n");
+  } else if (info.gpu_info.num_gpus > 1) {
+    PRN(ANSI_COLOR_GREEN "GPU Information:" ANSI_COLOR_RESET "\n");
+    for (size_t i = 0; i < info.gpu_info.num_gpus; i++) {
+      struct gpu_instance *g = &info.gpu_info.gpu[i];
+      PRN("  GPU %zu: %s\n", i, g->gpu_name);
+      PRN("    SM Utilization:     %u%%\n", g->gpu_sm_utilization);
+      PRN("    Memory Usage:    %.2f%% (%u MB / %u MB)\n",
+          g->gpu_mem_used_percentage, g->gpu_mem_used / 1024,
+          g->gpu_mem_total / 1024);
+      PRN("    Temperature:     %u°C\n", g->gpu_temp);
+      PRN("    Power Draw:      %u W\n", g->gpu_power_draw / 1000);
+      PRN("\n");
+    }
+  }
+  return buf_len;
+}
+
+#define MODE_PRINT 0
+#define MODE_SVG 1
+#define MODE_TUI 2
+
 typedef struct {
-  int persist;
-  int svg;
-  int topdown;
+  int mode;
+  int upsidedown;
 } Args;
 
 static inline Args argparse(int argc, char **argv) {
@@ -766,15 +890,15 @@ static inline Args argparse(int argc, char **argv) {
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
       puts("Usage: sys-genmon [-h,--help] "
-           "[-s,--svg] [-t,--topdown] "
-           "[-p,--persist] [-c,--clear-shm]"),
+           "[-s,--svg] [-u,--upsidedown] "
+           "[-c,--clear-shm] [-t,--tui]"),
           exit(0);
     } else if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--svg")) {
-      args.svg = 1;
-    } else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--topdown")) {
-      args.topdown = 1;
-    } else if (!strcmp(argv[i], "-p") || !strcmp(argv[i], "--persist")) {
-      args.persist = 1;
+      args.mode = MODE_SVG;
+    } else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--upsidedown")) {
+      args.upsidedown = 1;
+    } else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--tui")) {
+      args.mode = MODE_TUI;
     } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--clear-shm")) {
       if (shm_unlink(shm_name) && errno != ENOENT)
         puts("Failed to close the shared memory object."), exit(1);
@@ -786,27 +910,43 @@ static inline Args argparse(int argc, char **argv) {
   return args;
 }
 
+static inline void calculate_utilizations(Args args) {
+  struct cpu_record *prev_cpu_info = get_prev_cpu_info();
+  get_gpu_info(&info.gpu_info);
+  get_mem_info(&info.mem_info);
+  get_cpu_info(&info.cpu_info);
+  calculate_cpu_utilization(prev_cpu_info, &info.cpu_info);
+  save_cpu_shm(&info.cpu_info);
+}
+
 int main(int argc, char **argv) {
 
   Args args = argparse(argc, argv);
 
-  struct cpu_record *prev_cpu_info = get_prev_cpu_info(args.persist);
-  get_gpu_info(&info.gpu_info);
-  get_mem_info(&info.mem_info);
-  get_cpu_info(&info.cpu_info);
-
-  calculate_cpu_utilization(prev_cpu_info, &info.cpu_info);
-
-  save_cpu_shm(&info.cpu_info, args.persist);
-
   char buf[4096 * 20];
   size_t buf_len = buf[0] = 0;
-  if (args.svg)
-    buf_len = print_svg(buf, buf_len, args.topdown);
-  else
+  switch (args.mode) {
+  case MODE_PRINT: // Print genmon in (() ()) format
+    calculate_utilizations(args);
     buf_len = print_genmon(buf, buf_len);
-
-  write(STDOUT_FILENO, buf, buf_len);
+    write(STDOUT_FILENO, buf, buf_len);
+    break;
+  case MODE_SVG: // Print genmon in SVG format
+    calculate_utilizations(args);
+    buf_len = print_svg(buf, buf_len, args.upsidedown);
+    write(STDOUT_FILENO, buf, buf_len);
+    break;
+  case MODE_TUI: // TUI mode, for display in terminal
+    while (1) {
+      calculate_utilizations(args);
+      buf_len = print_tui(buf, buf_len);
+      write(STDOUT_FILENO, buf, buf_len);
+      sleep(1);
+    }
+    break;
+  default:
+    puts("Invalid mode."), exit(1);
+  }
 
   return 0;
 }
