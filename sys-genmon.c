@@ -56,7 +56,7 @@
 struct all_info {
   struct cpu_record {
     struct cpu_instance {
-      char cpu_name[16];
+      char cpu_number[16];
       uint32_t user;
       uint32_t system;
 
@@ -235,12 +235,12 @@ static inline void get_gpu_info(struct gpu_record *gpu) {
   if (!fp)
     perror("Failed to popen nvidia-smi"), exit(1);
 
-  // Read the line into a big static buffer.
+  // Read into a big static buffer.
   char nvsmi_contents[PAGE_SIZE];
-  if (!fgets(nvsmi_contents, sizeof(nvsmi_contents), fp))
-    perror("Failed to read from nvidia-smi"), exit(1);
+  if (!fread(nvsmi_contents, 1, PAGE_SIZE, fp))
+    puts("Failed to read from nvidia-smi."),
 
-  pclose(fp);
+        pclose(fp);
 
   char *line = nvsmi_contents;
   for (size_t i = 0; i < MAX_NUM_GPUS; i++) {
@@ -290,6 +290,7 @@ static inline void get_gpu_info(struct gpu_record *gpu) {
     gpu->gpu[i].gpu_temp = str_to_u32(gpu_temp, &err);
     if (err)
       puts("Failed to parse nvidia-smi output."), exit(1);
+
     gpu->num_gpus++;
     if (!*line)
       break;
@@ -333,7 +334,7 @@ static inline void get_cpu_info(cpu_record *cpu) {
     while (*p && *p != ' ')
       p++;
     *p++ = '\0';
-    strcpy(cpu->cpu[cpu->num_cpus].cpu_name, name);
+    strcpy(cpu->cpu[cpu->num_cpus].cpu_number, name);
 
     // Parse the cpu fields.
     int err = 0;
@@ -698,17 +699,12 @@ static inline size_t print_tooltip_text(char *buf, size_t buf_len, int genmon) {
   return buf_len;
 }
 
-static inline size_t print_css_text(char *buf, size_t buf_len) {
-  return buf_len;
-}
-
 static inline size_t print_genmon(char *buf, size_t buf_len) {
   // Print in pango markup
   // (https://developer-old.gnome.org/pygtk/stable/pango-markup-language.html)
   buf_len = print_panel_text(buf, buf_len);
   buf_len = print_click_text(buf, buf_len, 0);
   buf_len = print_tooltip_text(buf, buf_len, 1);
-  buf_len = print_css_text(buf, buf_len);
   return buf_len;
 }
 
@@ -796,7 +792,7 @@ static inline void write_svg_file(char *buf, size_t buf_len, int topdown) {
   buf_len = print_svg_footer(buf, buf_len);
 
   int fd = open(tmp_svg, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-  write(fd, buf, buf_len);
+  (void)!write(fd, buf, buf_len);
   close(fd);
 }
 
@@ -810,16 +806,14 @@ static inline size_t print_svg(char *buf, size_t buf_len, int topdown) {
   buf_len = print_svg_img(buf, buf_len);
   buf_len = print_click_text(buf, buf_len, 1);
   buf_len = print_tooltip_text(buf, buf_len, 1);
-  buf_len = print_css_text(buf, buf_len);
   return buf_len;
 }
 
 static inline size_t print_bar(char *buf, size_t buf_len, size_t length,
-                               float percent_full, const char *bracket_color,
-                               const char *fill_color) {
+                               float percent_full) {
   PRN("[");
   size_t bar_width = length * (percent_full / 100);
-  for (int j = 0; j < length; j++) {
+  for (size_t j = 0; j < length; j++) {
     if (j < bar_width) {
       PRN("#");
     } else {
@@ -838,50 +832,52 @@ static inline size_t print_tui(char *buf, size_t buf_len) {
   // CPU Utilization
   PRN(ANSI_COLOR_BLUE "CPU Utilization: " ANSI_COLOR_RESET "%.2f%%\n",
       avg_utilization);
-  for (size_t i = 0; i < info.cpu_info.num_cpus; i++) {
-    PRN("  CPU %2zu: ", i);
-    buf_len = print_bar(buf, buf_len, 50, utilization[i] / 2, "", "");
-    PRN(" %.2f%%\n", utilization[i]);
+  if (info.cpu_info.num_cpus < 32) {
+    for (size_t i = 0; i < info.cpu_info.num_cpus; i++) {
+      PRN("  CPU %2zu: ", i);
+      buf_len = print_bar(buf, buf_len, 50, utilization[i] / 2);
+      PRN(" %.2f%%\n", utilization[i]);
+    }
   }
   PRN("\n");
 
   // Memory Usage
   PRN(ANSI_COLOR_YELLOW "Memory Usage: " ANSI_COLOR_RESET "%.2f%%\n",
       info.mem_info.mem_percentage);
-  PRN("  Total: %u MB\n", info.mem_info.mem_total / 1024);
-  PRN("  Used:  %u MB\n", info.mem_info.mem_used / 1024);
-  PRN("  Free:  %u MB\n\n", info.mem_info.mem_free / 1024);
+  PRN("  Total: %" PRIu32 " MB\n", info.mem_info.mem_total / 1024);
+  PRN("  Used:  %" PRIu32 " MB\n", info.mem_info.mem_used / 1024);
+  PRN("  Free:  %" PRIu32 " MB\n\n", info.mem_info.mem_free / 1024);
 
   // Swap Usage
   PRN(ANSI_COLOR_MAGENTA "Swap Usage: " ANSI_COLOR_RESET "%.2f%%\n",
       info.mem_info.swp_percentage);
-  PRN("  Total: %u MB\n", info.mem_info.swp_total / 1024);
-  PRN("  Used:  %u MB\n", info.mem_info.swp_used / 1024);
-  PRN("  Free:  %u MB\n\n", info.mem_info.swp_free / 1024);
+  PRN("  Total: %" PRIu32 " MB\n", info.mem_info.swp_total / 1024);
+  PRN("  Used:  %" PRIu32 " MB\n", info.mem_info.swp_used / 1024);
+  PRN("  Free:  %" PRIu32 " MB\n\n", info.mem_info.swp_free / 1024);
 
   // GPU Information
   if (info.gpu_info.num_gpus == 1) {
     struct gpu_instance *g = &info.gpu_info.gpu[0];
     PRN(ANSI_COLOR_GREEN "GPU Information:" ANSI_COLOR_RESET "\n");
     PRN("  Name: %s\n", g->gpu_name);
-    PRN("  SM Utilization:     %u%%\n", g->gpu_sm_utilization);
+    PRN("  SM Utilization:     %" PRIu32 "%%\n", g->gpu_sm_utilization);
     PRN("  Memory Usage:    %.2f%% (%u MB / %u MB)\n",
         g->gpu_mem_used_percentage, g->gpu_mem_used / 1024,
         g->gpu_mem_total / 1024);
-    PRN("  Temperature:     %u°C\n", g->gpu_temp);
-    PRN("  Power Draw:      %u W\n", g->gpu_power_draw / 1000);
+    PRN("  Temperature:     %" PRIu32 "°C\n", g->gpu_temp);
+    PRN("  Power Draw:      %" PRIu32 " W\n", g->gpu_power_draw);
     PRN("\n");
   } else if (info.gpu_info.num_gpus > 1) {
     PRN(ANSI_COLOR_GREEN "GPU Information:" ANSI_COLOR_RESET "\n");
     for (size_t i = 0; i < info.gpu_info.num_gpus; i++) {
       struct gpu_instance *g = &info.gpu_info.gpu[i];
       PRN("  GPU %zu: %s\n", i, g->gpu_name);
-      PRN("    SM Utilization:     %u%%\n", g->gpu_sm_utilization);
-      PRN("    Memory Usage:    %.2f%% (%u MB / %u MB)\n",
+      PRN("    SM Utilization:     %" PRIu32 "%%\n", g->gpu_sm_utilization);
+      PRN("    Memory Usage:    %.2f%% (%" PRIu32 " MB / %" PRIu32 " MB)\n",
           g->gpu_mem_used_percentage, g->gpu_mem_used / 1024,
           g->gpu_mem_total / 1024);
-      PRN("    Temperature:     %u°C\n", g->gpu_temp);
-      PRN("    Power Draw:      %u W\n", g->gpu_power_draw / 1000);
+      PRN("    Temperature:     %" PRIu32 "°C\n", g->gpu_temp);
+      PRN("    Power Draw:      %" PRIu32 " W\n", g->gpu_power_draw / 1000);
       PRN("\n");
     }
   }
@@ -922,7 +918,7 @@ static inline Args argparse(int argc, char **argv) {
   return args;
 }
 
-static inline void calculate_utilizations(Args args) {
+static inline void calculate_utilizations(void) {
   get_prev_cpu_info();
   get_gpu_info(&info.gpu_info);
   get_mem_info(&info.mem_info);
@@ -939,20 +935,20 @@ int main(int argc, char **argv) {
   size_t buf_len = buf[0] = 0;
   switch (args.mode) {
   case MODE_PRINT: // Print genmon in (() ()) format
-    calculate_utilizations(args);
+    calculate_utilizations();
     buf_len = print_genmon(buf, buf_len);
-    write(STDOUT_FILENO, buf, buf_len);
+    (void)!write(STDOUT_FILENO, buf, buf_len);
     break;
   case MODE_SVG: // Print genmon in SVG format
-    calculate_utilizations(args);
+    calculate_utilizations();
     buf_len = print_svg(buf, buf_len, args.upsidedown);
-    write(STDOUT_FILENO, buf, buf_len);
+    (void)!write(STDOUT_FILENO, buf, buf_len);
     break;
   case MODE_TUI: // TUI mode, for display in terminal
     while (1) {
-      calculate_utilizations(args);
+      calculate_utilizations();
       buf_len = print_tui(buf, buf_len);
-      write(STDOUT_FILENO, buf, buf_len);
+      (void)!write(STDOUT_FILENO, buf, buf_len);
       buf_len = 0;
       sleep(1);
     }
