@@ -53,25 +53,6 @@
 
 #define PAGE_SIZE 4096
 
-static const char *tmp_svg = "/tmp/sys-genmon.svg";
-static const char *shm_name = "/genmon_shmem";
-static char *shm_contents = NULL;
-
-static const char *nvsmi_cmd = "nvidia-smi "
-                               "--query-gpu="
-                               "gpu_name,"
-                               "utilization.gpu,"
-                               "utilization.memory,"
-                               "memory.total,"
-                               "memory.used,"
-                               "memory.free,"
-                               "clocks.current.graphics,"
-                               "clocks.current.memory,"
-                               "clocks.current.video,"
-                               "power.draw,"
-                               "temperature.gpu "
-                               "--format=csv,noheader,nounits";
-
 struct all_info {
   struct cpu_record {
     struct cpu_instance {
@@ -126,10 +107,27 @@ struct all_info {
 
 static float avg_utilization;
 static float utilization[MAX_NUM_CPUS];
-
 typedef struct cpu_record cpu_record;
 typedef struct gpu_record gpu_record;
 typedef struct mem_record mem_record;
+
+static struct cpu_record *prev_cpu_info = NULL;
+static const char *tmp_svg = "/tmp/sys-genmon.svg";
+static const char *shm_name = "/genmon_shmem";
+static const char *nvsmi_cmd = "nvidia-smi "
+                               "--query-gpu="
+                               "gpu_name,"
+                               "utilization.gpu,"
+                               "utilization.memory,"
+                               "memory.total,"
+                               "memory.used,"
+                               "memory.free,"
+                               "clocks.current.graphics,"
+                               "clocks.current.memory,"
+                               "clocks.current.video,"
+                               "power.draw,"
+                               "temperature.gpu "
+                               "--format=csv,noheader,nounits";
 
 static inline uint32_t str_to_u32(char *s, int *err) {
 #if UINT32_MAX <= ULONG_MAX
@@ -511,7 +509,7 @@ static inline float *calculate_cpu_utilization(cpu_record *prev,
   return utilization;
 }
 
-static inline cpu_record *get_prev_cpu_info() {
+static inline void get_prev_cpu_info() {
   const size_t psm1 = PAGE_SIZE - 1;
   const size_t shm_size = (sizeof(cpu_record) + 1 + psm1) & ~psm1;
 
@@ -524,22 +522,36 @@ static inline cpu_record *get_prev_cpu_info() {
   if (ftruncate(fd, shm_size) == -1)
     puts("Failed to ftruncate the shared memory file."), exit(1);
 
-  shm_contents =
+  char *shm_contents =
       mmap(NULL, shm_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (shm_contents == MAP_FAILED)
     puts("Failed to mmap the shared memory file."), exit(1);
 
-  // Check if it's the first run. If it is, we need to get new CPU info.
+  // Dispose of the file descriptor.
+  close(fd);
+  shm_unlink(shm_name);
+
+  // Check if it's the first time this process has been run.
+  // If it is, we need to take new measurments and pack it in, so that we have a
+  // reference point.
   char *flagptr = shm_contents + sizeof(cpu_record);
   if (*flagptr == '\0') {
     *flagptr = 1;
     get_cpu_info((cpu_record *)shm_contents);
   }
-  return (cpu_record *)shm_contents;
+
+  // Check if it's the first time this function has been run in the current
+  // process. If it is, yoink the shm_contents buffer. Or copy and unmap.
+  if (!prev_cpu_info) {
+    prev_cpu_info = (cpu_record *)shm_contents;
+  } else {
+    memcpy(prev_cpu_info, shm_contents, sizeof(cpu_record));
+    munmap(shm_contents, shm_size);
+  }
 }
 
 static inline void save_cpu_shm(cpu_record *cpu) {
-  memcpy(shm_contents, cpu, sizeof(cpu_record));
+  memcpy((char *)prev_cpu_info, cpu, sizeof(cpu_record));
 }
 
 // Print results
@@ -805,6 +817,9 @@ static inline size_t print_svg(char *buf, size_t buf_len, int topdown) {
 static inline size_t print_bar(char *buf, size_t buf_len, size_t length,
                                float percent_full, const char *bracket_color,
                                const char *fill_color) {
+  // Print all args for debugging
+  printf("length: %zu, percent_full: %.2f, bracket_color: %s, fill_color: %s\n",
+         length, percent_full, bracket_color, fill_color);
   PRN("[");
   size_t bar_width = length * (percent_full / 100);
   for (int j = 0; j < length; j++) {
@@ -911,7 +926,7 @@ static inline Args argparse(int argc, char **argv) {
 }
 
 static inline void calculate_utilizations(Args args) {
-  struct cpu_record *prev_cpu_info = get_prev_cpu_info();
+  get_prev_cpu_info();
   get_gpu_info(&info.gpu_info);
   get_mem_info(&info.mem_info);
   get_cpu_info(&info.cpu_info);
@@ -941,6 +956,7 @@ int main(int argc, char **argv) {
       calculate_utilizations(args);
       buf_len = print_tui(buf, buf_len);
       write(STDOUT_FILENO, buf, buf_len);
+      buf_len = 0;
       sleep(1);
     }
     break;
