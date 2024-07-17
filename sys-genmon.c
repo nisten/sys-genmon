@@ -817,9 +817,6 @@ static inline size_t print_svg(char *buf, size_t buf_len, int topdown) {
 static inline size_t print_bar(char *buf, size_t buf_len, size_t length,
                                float percent_full, const char *bracket_color,
                                const char *fill_color) {
-  // Print all args for debugging
-  printf("length: %zu, percent_full: %.2f, bracket_color: %s, fill_color: %s\n",
-         length, percent_full, bracket_color, fill_color);
   PRN("[");
   size_t bar_width = length * (percent_full / 100);
   for (int j = 0; j < length; j++) {
