@@ -861,8 +861,8 @@ static inline size_t print_tui(char *buf, size_t buf_len) {
     PRN(ANSI_COLOR_GREEN "GPU Information:" ANSI_COLOR_RESET "\n");
     PRN("  Name: %s\n", g->gpu_name);
     PRN("  SM Utilization:     %" PRIu32 "%%\n", g->gpu_sm_utilization);
-    PRN("  Memory Usage:    %.2f%% (%u MB / %u MB)\n",
-        g->gpu_mem_used_percentage, g->gpu_mem_used / 1024,
+    PRN("  Memory Usage:    %.2f%% (%f GiB / %u GiB)\n",
+        g->gpu_mem_used_percentage, g->gpu_mem_used / 1024.,
         g->gpu_mem_total / 1024);
     PRN("  Temperature:     %" PRIu32 "°C\n", g->gpu_temp);
     PRN("  Power Draw:      %" PRIu32 " W\n", g->gpu_power_draw);
@@ -872,12 +872,12 @@ static inline size_t print_tui(char *buf, size_t buf_len) {
     for (size_t i = 0; i < info.gpu_info.num_gpus; i++) {
       struct gpu_instance *g = &info.gpu_info.gpu[i];
       PRN("  GPU %zu: %s\n", i, g->gpu_name);
-      PRN("    SM Utilization:     %" PRIu32 "%%\n", g->gpu_sm_utilization);
-      PRN("    Memory Usage:    %.2f%% (%" PRIu32 " MB / %" PRIu32 " MB)\n",
-          g->gpu_mem_used_percentage, g->gpu_mem_used / 1024,
-          g->gpu_mem_total / 1024);
+      PRN("    SM Utilization:  %" PRIu32 "%%\n", g->gpu_sm_utilization);
+      PRN("    Memory Usage:    %.2f%% (%.2f GiB / %.2f GiB)\n",
+          g->gpu_mem_used_percentage, (float)g->gpu_mem_used / 1024.0,
+          (float)g->gpu_mem_total / 1024.0);
       PRN("    Temperature:     %" PRIu32 "°C\n", g->gpu_temp);
-      PRN("    Power Draw:      %" PRIu32 " W\n", g->gpu_power_draw / 1000);
+      PRN("    Power Draw:      %" PRIu32 " W\n", g->gpu_power_draw);
       PRN("\n");
     }
   }
