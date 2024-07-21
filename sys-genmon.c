@@ -530,7 +530,6 @@ static inline void get_prev_cpu_info() {
 
   // Dispose of the file descriptor.
   close(fd);
-  shm_unlink(shm_name);
 
   // Check if it's the first time this process has been run.
   // If it is, we need to take new measurments and pack it in, so that we have a
