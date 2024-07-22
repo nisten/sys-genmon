@@ -1,3 +1,6 @@
+#if 0
+TMP=$(mktemp -d); cc -o "$TMP/a.out" "$0" && "$TMP/a.out" $@; RVAL=$?; rm -rf ${TMP}; exit ${RVAL}
+#endif
 
 // Requires linux 2.6.33 (Released Feb 2010) or later.
 // Assumes that the number of CPUs doesn't change while the program is running.
@@ -235,12 +238,13 @@ static inline void get_gpu_info(struct gpu_record *gpu) {
   if (!fp)
     perror("Failed to popen nvidia-smi"), exit(1);
 
-  // Read into a big static buffer.
-  char nvsmi_contents[PAGE_SIZE];
-  if (!fread(nvsmi_contents, 1, PAGE_SIZE, fp))
-    puts("Failed to read from nvidia-smi."),
-
-        pclose(fp);
+  // fread into a big static buffer, and null terminate.
+  char nvsmi_contents[PAGE_SIZE * MAX_NUM_GPUS];
+  size_t n_read = fread(nvsmi_contents, 1, sizeof(nvsmi_contents) - 1, fp);
+  if (!n_read)
+    puts("Failed to read from nvidia-smi."), exit(1);
+  pclose(fp);
+  nvsmi_contents[n_read] = '\0';
 
   char *line = nvsmi_contents;
   for (size_t i = 0; i < MAX_NUM_GPUS; i++) {
