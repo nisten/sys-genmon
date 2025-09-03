@@ -197,7 +197,7 @@ static inline char *get_cpu_name(void) {
   return cpu_name;
 }
 
-static inline char *read_memitem(char *p, char *title, uint32_t *item) {
+static inline char *read_memitem(char *p, char *title, uint32_t *item, int *hit_one) {
   if (!*p) {
     puts("Failed to parse /proc/meminfo. Ran out of input."), exit(1);
   } else if (starts_with(p, title)) {
@@ -217,6 +217,8 @@ static inline char *read_memitem(char *p, char *title, uint32_t *item) {
     *item = str_to_u32(itemstr, &err);
     if (err)
       puts("Failed to parse /proc/meminfo. Invalid number format."), exit(1);
+    else
+      *hit_one = 1;
   }
   return p;
 }
@@ -427,23 +429,23 @@ static inline void get_mem_info(mem_record *mem) {
   struct {
     char *name;
     uint32_t *field;
+    int found;
   } items[] = {
-      {"MemTotal:", &mem->mem_total},
-      {"MemAvailable:", &mem->mem_free},
-      {"SwapTotal:", &mem->swp_total},
-      {"SwapFree:", &mem->swp_free},
+      {"MemTotal:", &mem->mem_total, 0},
+      {"MemAvailable:", &mem->mem_free, 0},
+      {"SwapTotal:", &mem->swp_total, 0},
+      {"SwapFree:", &mem->swp_free, 0},
   };
   size_t n_items = sizeof(items) / sizeof(items[0]);
   size_t n_found = 0;
 
   char *p = meminfo_contents;
   while (1) {
+    // Look for the items in order
     int hit_one = 0;
-    for (size_t i = 0; i < n_items; i++) {
-      if (*items[i].field)
-        continue;
-      p = read_memitem(p, items[i].name, items[i].field);
-      if (*items[i].field) {
+    if (!items[n_found].found) {
+      p = read_memitem(p, items[n_found].name, items[n_found].field, &items[n_found].found);
+      if (items[n_found].found) {
         hit_one = 1;
         n_found++;
       }
@@ -453,12 +455,13 @@ static inline void get_mem_info(mem_record *mem) {
     if (n_found == n_items)
       break;
 
+    // Skip ahead to the next line if we didn't find anything
     if (!hit_one) {
-      // Skip ahead to the next line if there is one, otherwise stop reading.
       if (*p) {
         while (*p && *p != '\n')
           p++;
-        p++;
+        if (*p == '\n')
+          p++;
       } else {
         break;
       }
