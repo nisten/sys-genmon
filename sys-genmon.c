@@ -1,5 +1,5 @@
 #if 0
-TMP=$(mktemp -d); cc -o "$TMP/a.out" "$0" && "$TMP/a.out" $@; RVAL=$?; rm -rf ${TMP}; exit ${RVAL}
+TMP="$(mktemp -d)"; cc -o "$TMP/a.out" -x c "$0" && "$TMP/a.out" $@; RVAL=$?; rm -rf "$TMP"; exit $RVAL
 #endif
 
 // Requires linux 2.6.33 (Released Feb 2010) or later.
