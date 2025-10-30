@@ -237,15 +237,19 @@ static inline void get_gpu_info(struct gpu_record *gpu) {
   gpu->num_gpus = 0;
 
   FILE *fp = popen(nvsmi_cmd, "r");
-  if (!fp)
-    perror("Failed to popen nvidia-smi"), exit(1);
+  if (!fp) {
+    // nvidia-smi not available, no GPUs
+    return;
+  }
 
   // fread into a big static buffer, and null terminate.
   char nvsmi_contents[PAGE_SIZE * MAX_NUM_GPUS];
   size_t n_read = fread(nvsmi_contents, 1, sizeof(nvsmi_contents) - 1, fp);
-  if (!n_read)
-    puts("Failed to read from nvidia-smi."), exit(1);
-  pclose(fp);
+  int status = pclose(fp);
+  if (!n_read || status != 0) {
+    // No output or nvidia-smi failed, no GPUs
+    return;
+  }
   nvsmi_contents[n_read] = '\0';
 
   char *line = nvsmi_contents;
@@ -568,11 +572,9 @@ static inline void save_cpu_shm(cpu_record *cpu) {
 static inline size_t print_cpu_utilization(size_t num_cpus, char *buf,
                                            size_t buf_len, int genmon,
                                            int bar) {
-  if (genmon)
-    PRN("<big><b><span weight='bold'>");
+  if (genmon) PRN("<big><b><span weight='bold'>");
   PRN("CPU Utilization:");
-  if (genmon)
-    PRN("</span></b></big>");
+  if (genmon) PRN("</span></b></big>");
   PRN("\n");
   for (size_t i = 0; i < num_cpus; i++) {
     if (bar) {
@@ -592,11 +594,9 @@ static inline size_t print_gpu_info(gpu_record *gpu, char *buf, size_t buf_len,
     return buf_len;
   } else if (gpu->num_gpus == 1) {
     g = &gpu->gpu[0];
-    if (genmon)
-      PRN("<big><b><span weight='bold'>");
+    if (genmon) PRN("<big><b><span weight='bold'>");
     PRN("%s:", g->gpu_name);
-    if (genmon)
-      PRN("</span></b></big>");
+    if (genmon) PRN("</span></b></big>");
     PRN("\n");
 
     PRN("  GPU SM Utilization: %" PRIu32 "%%\n", g->gpu_sm_utilization);
@@ -611,19 +611,36 @@ static inline size_t print_gpu_info(gpu_record *gpu, char *buf, size_t buf_len,
     PRN("  GPU Power Draw: %" PRIu32 "\n", g->gpu_power_draw);
     PRN("  GPU Temp: %" PRIu32 "°\n", g->gpu_temp);
   } else {
-    PRN("Multiple GPUs found. Printing multiple GPUs not yet implemented.\n");
-    exit(1);
+    // Multiple GPUs
+    for (size_t i = 0; i < gpu->num_gpus; i++) {
+      g = &gpu->gpu[i];
+      if (genmon) PRN("<big><b><span weight='bold'>");
+      PRN("GPU %zu - %s:", i, g->gpu_name);
+      if (genmon) PRN("</span></b></big>");
+      PRN("\n");
+
+      PRN("  GPU SM Utilization: %" PRIu32 "%%\n", g->gpu_sm_utilization);
+      PRN("  GPU Mem Bandwidth Utilization: %" PRIu32 "%%\n", g->gpu_mem_bandwidth_utilization);
+      PRN("  GPU Mem Total: %" PRIu32 "\n", g->gpu_mem_total);
+      PRN("  GPU Mem Used: %" PRIu32 "\n", g->gpu_mem_used);
+      PRN("  GPU Mem Free: %" PRIu32 "\n", g->gpu_mem_free);
+      PRN("  GPU Graphics Clock: %" PRIu32 "\n", g->gpu_graphics_clock);
+      PRN("  GPU Mem Clock: %" PRIu32 "\n", g->gpu_mem_clock);
+      PRN("  GPU Video Clock: %" PRIu32 "\n", g->gpu_video_clock);
+      PRN("  GPU Power Draw: %" PRIu32 "\n", g->gpu_power_draw);
+      PRN("  GPU Temp: %" PRIu32 "°\n", g->gpu_temp);
+      if (i < gpu->num_gpus - 1)
+        PRN("\n");
+    }
   }
   return buf_len;
 }
 
 static inline size_t print_cpu_mem_info(mem_record *mem, char *buf,
                                         size_t buf_len, int genmon) {
-  if (genmon)
-    PRN("<big><b><span weight='bold'>");
+  if (genmon) PRN("<big><b><span weight='bold'>");
   PRN("CPU MEMORY: %.2f%%", mem->mem_percentage);
-  if (genmon)
-    PRN("</span></b></big>");
+  if (genmon) PRN("</span></b></big>");
   PRN("\n");
   PRN("  Total: %" PRIu32 "\n", mem->mem_total);
   PRN("  Used: %" PRIu32 "\n", mem->mem_used);
@@ -634,11 +651,9 @@ static inline size_t print_cpu_mem_info(mem_record *mem, char *buf,
 
 static inline size_t print_swap_mem_info(mem_record *mem, char *buf,
                                          size_t buf_len, int genmon) {
-  if (genmon)
-    PRN("<big><b><span weight='bold'>");
+  if (genmon) PRN("<big><b><span weight='bold'>");
   PRN("Swap MEMORY: %.2f%%", mem->swp_percentage);
-  if (genmon)
-    PRN("</span></b></big>");
+  if (genmon) PRN("</span></b></big>");
   PRN("\n");
   PRN("  Total: %" PRIu32 "\n", mem->swp_total);
   PRN("  Used: %" PRIu32 "\n", mem->swp_used);
@@ -654,19 +669,29 @@ static inline size_t print_gpu_mem_info(gpu_record *gpu, char *buf,
     return buf_len;
   else if (gpu->num_gpus == 1) {
     g = &gpu->gpu[0];
-    if (genmon)
-      PRN("<big><b><span weight='bold'>");
+    if (genmon) PRN("<big><b><span weight='bold'>");
     PRN("GPU MEMORY: %.2f%%", g->gpu_mem_used_percentage);
-    if (genmon)
-      PRN("</span></b></big>");
+    if (genmon) PRN("</span></b></big>");
     PRN("\n");
     PRN("  Total: %" PRIu32 "\n", g->gpu_mem_total);
     PRN("  Used: %" PRIu32 "\n", g->gpu_mem_used);
     PRN("  Free: %" PRIu32 "\n", g->gpu_mem_free);
     PRN("\n");
   } else {
-    PRN("Multiple GPUs found. Printing multiple GPUs not yet implemented.\n");
-    exit(1);
+    // Multiple GPUs
+    for (size_t i = 0; i < gpu->num_gpus; i++) {
+      g = &gpu->gpu[i];
+      if (genmon) PRN("<big><b><span weight='bold'>");
+      PRN("GPU %zu MEMORY: %.2f%%", i, g->gpu_mem_used_percentage);
+      if (genmon) PRN("</span></b></big>");
+      PRN("\n");
+      PRN("  Total: %" PRIu32 "\n", g->gpu_mem_total);
+      PRN("  Used: %" PRIu32 "\n", g->gpu_mem_used);
+      PRN("  Free: %" PRIu32 "\n", g->gpu_mem_free);
+      if (i < gpu->num_gpus - 1)
+        PRN("\n");
+    }
+    PRN("\n");
   }
   return buf_len;
 }
@@ -674,10 +699,15 @@ static inline size_t print_gpu_mem_info(gpu_record *gpu, char *buf,
 static inline size_t print_panel_text(char *buf, size_t buf_len) {
   // ((CPU Utilization %, Mem %, Swap %), (GPU Utilization %, GPU Mem %))
   PRN("<txt>");
-  PRN("((%5.2f%%, %5.2f%%, %5.2f%%) (%5.2f%%, %5.2f%%))", avg_utilization,
-      info.mem_info.mem_percentage, info.mem_info.swp_percentage,
-      (float)info.gpu_info.gpu[0].gpu_sm_utilization,
-      info.gpu_info.gpu[0].gpu_mem_used_percentage);
+  if (info.gpu_info.num_gpus > 0) {
+    PRN("((%5.2f%%, %5.2f%%, %5.2f%%) (%5.2f%%, %5.2f%%))", avg_utilization,
+        info.mem_info.mem_percentage, info.mem_info.swp_percentage,
+        (float)info.gpu_info.gpu[0].gpu_sm_utilization,
+        info.gpu_info.gpu[0].gpu_mem_used_percentage);
+  } else {
+    PRN("((%5.2f%%, %5.2f%%, %5.2f%%))", avg_utilization,
+        info.mem_info.mem_percentage, info.mem_info.swp_percentage);
+  }
   PRN("</txt>\n");
   return buf_len;
 }

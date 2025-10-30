@@ -14,6 +14,7 @@ if [ "$1" = "debug" ]; then
     exit 0
 
 elif [ "$1" = "cuda" ]; then
+    # We are not actually using any cupti features.
     echo "Built in CUDA MODE (this is a pun)."
 
     CUDA_PATH="/usr/local/cuda"
