@@ -38,8 +38,6 @@ TMP="$(mktemp -d)"; cc -o "$TMP/a.out" -x c "$0" && "$TMP/a.out" $@; RVAL=$?; rm
 #define MAX_NUM_CPUS 256
 #define MAX_NUM_GPUS 8
 
-#define SVG_BAR_WIDTH 3,
-
 #define ANSI_COLOR_RED "\x1b[31m"
 #define ANSI_COLOR_GREEN "\x1b[32m"
 #define ANSI_COLOR_YELLOW "\x1b[33m"
@@ -142,13 +140,13 @@ static inline uint32_t str_to_u32(char *s, int *err) {
 #endif
   errno = 0;
   strtot ul = strtou(s, NULL, 10);
-  if (errno | (ul > UINT32_MAX))
+  if (errno || (ul > UINT32_MAX))
     *err = 1;
   return ul;
 }
 
 static inline int starts_with(char *s, char *start) {
-  while (*start & *s) {
+  while (*start && *s) {
     if (*start != *s)
       return 0;
     start++;
@@ -162,7 +160,7 @@ static inline char *get_cpu_name(void) {
   if (cpu_name[0])
     return cpu_name;
 
-  FILE *f = fopen("/proc/cpuinfo", O_RDONLY);
+  FILE *f = fopen("/proc/cpuinfo", "r");
   if (!f)
     puts("Failed to open /proc/cpuinfo."), exit(1);
 
@@ -506,11 +504,10 @@ static inline float *calculate_cpu_utilization(cpu_record *prev,
     uint32_t idle_diff = current_idle - prev_idle;
     uint32_t total_diff = current_total - prev_total;
 
-    int nancheck = total_diff == 0;
-    float ratio_idle = (float)idle_diff / ((float)total_diff + nancheck);
-    float percent_active =
-        +(1.0 - ratio_idle) * 100; // Always positive to avoid signed zero.
-    utilization[i] = percent_active * !nancheck;
+    float denom = (float)total_diff;
+    float ratio_idle = denom ? (float)idle_diff / denom : 0.0;
+    float percent_active = +(1.0 - ratio_idle) * 100; // Always positive to avoid signed zero.
+    utilization[i] = percent_active;
   }
 
   avg_utilization = 0;
@@ -828,7 +825,7 @@ static inline void write_svg_file(char *buf, size_t buf_len, int topdown) {
   buf_len = print_svg_footer(buf, buf_len);
 
   int fd = open(tmp_svg, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-  (void)!write(fd, buf, buf_len);
+  (void)!write(fd, buf, buf_len); // Fail silently :)
   close(fd);
 }
 
