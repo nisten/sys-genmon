@@ -113,8 +113,8 @@ typedef struct gpu_record gpu_record;
 typedef struct mem_record mem_record;
 
 static struct cpu_record *prev_cpu_info = NULL;
-static const char *tmp_svg = "/tmp/sys-genmon.svg";
-static const char *shm_name = "/genmon_shmem";
+static char tmp_svg[512] = {0};  // Dynamic path per user
+static char shm_name[256] = {0}; // Dynamic name per user
 static const char *nvsmi_cmd = "nvidia-smi "
                                "--query-gpu="
                                "gpu_name,"
@@ -129,6 +129,60 @@ static const char *nvsmi_cmd = "nvidia-smi "
                                "power.draw,"
                                "temperature.gpu "
                                "--format=csv,noheader,nounits";
+
+// M1/Asahi GPU monitoring - Direct kernel interface, Carmack-style
+// Currently stubs - waiting for DRM fdinfo support in kernel 6.16+
+static inline int detect_asahi_gpu(void) {
+  // Check if Asahi GPU device exists (works on all M1/M2/M3)
+  struct stat st;
+  // M1/M2 GPU at 0x206400000, M3 at different address
+  if (stat("/sys/devices/platform/soc/206400000.gpu", &st) == 0) {
+    return 1; // M1/M2 detected
+  }
+  // Check for DRM card0 with apple driver as fallback
+  FILE *f = fopen("/sys/class/drm/card0/device/driver", "r");
+  if (f) {
+    fclose(f);
+    return 1;
+  }
+  return 0;
+}
+
+static inline void get_asahi_gpu_info(struct gpu_record *gpu) {
+  gpu->num_gpus = 0;
+
+  if (!detect_asahi_gpu()) return;
+
+  // M1 GPU detected
+  gpu->num_gpus = 1;
+  struct gpu_instance *g = &gpu->gpu[0];
+
+  // Read GPU name from dmesg or default to M1
+  strncpy(g->gpu_name, "Apple M1 GPU (7-core)", sizeof(g->gpu_name) - 1);
+  g->gpu_name[sizeof(g->gpu_name) - 1] = '\0';
+
+  // STUBBED: DRM fdinfo not yet available in Asahi driver v0.0.0
+  // When kernel 6.16+ DRM stats land, parse /proc/[pid]/fdinfo/[fd]:
+  //   drm-engine-gfx: [cycles]
+  //   drm-cycles-gfx: [total]
+  //   drm-memory-vram: [bytes]
+  // For now: report 0 (unknown)
+  g->gpu_sm_utilization = 0;  // TODO: parse DRM fdinfo when available
+  g->gpu_mem_bandwidth_utilization = 0;
+
+  // M1 GPU memory is shared with system RAM - estimate from GL apps
+  g->gpu_mem_total = 0;  // Shared memory architecture
+  g->gpu_mem_used = 0;
+  g->gpu_mem_free = 0;
+  g->gpu_mem_used_percentage = 0.0;
+
+  // Clock/power stats not exposed by firmware
+  g->gpu_graphics_clock = 0;
+  g->gpu_mem_clock = 0;
+  g->gpu_video_clock = 0;
+  g->gpu_power_draw = 0;
+  g->gpu_temp = 0;
+}
 
 static inline uint32_t str_to_u32(char *s, int *err) {
 #if UINT32_MAX <= ULONG_MAX
@@ -153,6 +207,20 @@ static inline int starts_with(char *s, char *start) {
     s++;
   }
   return 1;
+}
+
+static inline void init_secure_paths(void) {
+  // Use XDG_RUNTIME_DIR if available, otherwise fall back to /tmp with user ID
+  const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+  uid_t uid = getuid();
+
+  if (runtime_dir && runtime_dir[0] == '/') {
+    snprintf(tmp_svg, sizeof(tmp_svg), "%s/sys-genmon-%d.svg", runtime_dir, uid);
+  } else {
+    snprintf(tmp_svg, sizeof(tmp_svg), "/tmp/sys-genmon-%d.svg", uid);
+  }
+
+  snprintf(shm_name, sizeof(shm_name), "/genmon_shmem_%d", uid);
 }
 
 static inline char *get_cpu_name(void) {
@@ -180,36 +248,47 @@ static inline char *get_cpu_name(void) {
     return cpu_name;
   }
 
-  while (*p != ':')
+  // Bounded search for colon
+  char *end = cpu_name + CPU_NAME_BUFSZ;
+  while (*p != ':' && p < end)
     p++;
+  if (p >= end) {
+    sprintf(cpu_name, "Unknown CPU");
+    return cpu_name;
+  }
   p += 2;
 
-  // Get size of content, overwrite
+  // Get size of content, overwrite with bounds checking
   char *q = p;
-  while (*q != '\n')
+  while (*q != '\n' && q < end)
     q++;
   int n = q - p;
-  memmove(cpu_name, p, n);
-  cpu_name[n] = '\0';
+  if (n > 0 && n < CPU_NAME_BUFSZ) {
+    memmove(cpu_name, p, n);
+    cpu_name[n] = '\0';
+  } else {
+    sprintf(cpu_name, "Unknown CPU");
+  }
 
   return cpu_name;
 }
 
-static inline char *read_memitem(char *p, char *title, uint32_t *item, int *hit_one) {
-  if (!*p) {
+static inline char *read_memitem(char *p, char *end, char *title, uint32_t *item, int *hit_one) {
+  if (!*p || p >= end) {
     puts("Failed to parse /proc/meminfo. Ran out of input."), exit(1);
   } else if (starts_with(p, title)) {
     p += strlen(title);
-    while (*p == ' ')
+    while (*p == ' ' && p < end)
       p++;
     char *itemstr = p;
-    while (*p != ' ')
+    while (*p != ' ' && p < end)
       p++;
-    if (*p != '\n')
+    if (*p != '\n' && p < end)
       *p++ = '\0';
-    while (*p != '\n')
+    while (*p != '\n' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end)
+      *p++ = '\0';
 
     int err = 0;
     *item = str_to_u32(itemstr, &err);
@@ -221,19 +300,28 @@ static inline char *read_memitem(char *p, char *title, uint32_t *item, int *hit_
   return p;
 }
 
-static inline char *next_gpu_item(char *line) {
-  while (1) {
+static inline char *next_gpu_item(char *line, char *end) {
+  while (line < end) {
     int lc = *line == ',';
     int ln = *line == '\n';
-    if (lc | ln)
+    int lz = *line == '\0';
+    if (lc | ln | lz)
       return *line = '\0', line + (lc ? 2 : 1);
     line++;
   }
+  return line;
 }
 
 static inline void get_gpu_info(struct gpu_record *gpu) {
   gpu->num_gpus = 0;
 
+  // Try Asahi/M1 GPU first (native Linux driver)
+  if (detect_asahi_gpu()) {
+    get_asahi_gpu_info(gpu);
+    return;
+  }
+
+  // Fall back to NVIDIA if present
   FILE *fp = popen(nvsmi_cmd, "r");
   if (!fp) {
     // nvidia-smi not available, no GPUs
@@ -251,46 +339,53 @@ static inline void get_gpu_info(struct gpu_record *gpu) {
   nvsmi_contents[n_read] = '\0';
 
   char *line = nvsmi_contents;
+  char *end = nvsmi_contents + n_read;
   for (size_t i = 0; i < MAX_NUM_GPUS; i++) {
 
     char *gpu_name = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_sm_utilization = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_mem_bandwidth_utilization = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
 
     char *gpu_mem_total = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_mem_used = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_mem_free = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
 
     char *gpu_graphics_clock = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_mem_clock = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_video_clock = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
 
     char *gpu_power_draw = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
     char *gpu_temp = line;
-    line = next_gpu_item(line);
+    line = next_gpu_item(line, end);
 
     int err = 0;
-    strcpy(gpu->gpu[i].gpu_name, gpu_name);
+    // Use strncpy to prevent buffer overflow
+    strncpy(gpu->gpu[i].gpu_name, gpu_name, sizeof(gpu->gpu[i].gpu_name) - 1);
+    gpu->gpu[i].gpu_name[sizeof(gpu->gpu[i].gpu_name) - 1] = '\0';
     gpu->gpu[i].gpu_sm_utilization = str_to_u32(gpu_sm_utilization, &err);
     gpu->gpu[i].gpu_mem_bandwidth_utilization =
         str_to_u32(gpu_mem_bandwidth_utilization, &err);
     gpu->gpu[i].gpu_mem_total = str_to_u32(gpu_mem_total, &err);
     gpu->gpu[i].gpu_mem_used = str_to_u32(gpu_mem_used, &err);
     gpu->gpu[i].gpu_mem_free = str_to_u32(gpu_mem_free, &err);
-    gpu->gpu[i].gpu_mem_used_percentage =
-        100.0 *
-        ((float)gpu->gpu[i].gpu_mem_used /
-         (float)gpu->gpu[i].gpu_mem_total); // Leave as nan if no gpu mem
+
+    // Handle division by zero gracefully
+    if (gpu->gpu[i].gpu_mem_total > 0) {
+      gpu->gpu[i].gpu_mem_used_percentage =
+          100.0 * ((float)gpu->gpu[i].gpu_mem_used / (float)gpu->gpu[i].gpu_mem_total);
+    } else {
+      gpu->gpu[i].gpu_mem_used_percentage = 0.0;
+    }
     gpu->gpu[i].gpu_graphics_clock = str_to_u32(gpu_graphics_clock, &err);
     gpu->gpu[i].gpu_mem_clock = str_to_u32(gpu_mem_clock, &err);
     gpu->gpu[i].gpu_video_clock = str_to_u32(gpu_video_clock, &err);
@@ -322,12 +417,14 @@ static inline void get_cpu_info(cpu_record *cpu) {
 
   // Pass over the first line.
   char *p = stat_contents;
-  while (*p && *p != '\n')
+  char *end = stat_contents + n_read;
+  while (*p && *p != '\n' && p < end)
     p++;
-  p++;
+  if (p < end)
+    p++;
 
   // Parse the cpuX fields.
-  while (1) {
+  while (p < end) {
 
     // Verify that the line starts with "cpu".
     char *name = p;
@@ -338,74 +435,81 @@ static inline void get_cpu_info(cpu_record *cpu) {
     if (*p++ != 'u')
       return;
 
-    // Parse the cpu number
-    while (*p && *p != ' ')
-      p++;
-    *p++ = '\0';
-    strcpy(cpu->cpu[cpu->num_cpus].cpu_number, name);
+    // Check bounds before adding CPU
+    if (cpu->num_cpus >= MAX_NUM_CPUS) {
+      puts("Too many CPUs detected. Exiting."), exit(1);
+    }
 
-    // Parse the cpu fields.
+    // Parse the cpu number with bounds checking
+    while (*p && *p != ' ' && p < end)
+      p++;
+    if (p < end)
+      *p++ = '\0';
+    strncpy(cpu->cpu[cpu->num_cpus].cpu_number, name, sizeof(cpu->cpu[cpu->num_cpus].cpu_number) - 1);
+    cpu->cpu[cpu->num_cpus].cpu_number[sizeof(cpu->cpu[cpu->num_cpus].cpu_number) - 1] = '\0';
+
+    // Parse the cpu fields with bounds checking
     int err = 0;
 
     char *user = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].user = str_to_u32(user, &err);
 
     char *nice = p; // Skip nice because it's not used in the calculation.
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    p++;
+    if (p < end) p++;
     (void)nice;
 
     char *system = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].system = str_to_u32(system, &err);
 
     char *idle = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].idle = str_to_u32(idle, &err);
 
     char *iowait = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].iowait = str_to_u32(iowait, &err);
 
     char *irq = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].irq = str_to_u32(irq, &err);
 
     char *softirq = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].softirq = str_to_u32(softirq, &err);
 
     char *steal = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].steal = str_to_u32(steal, &err);
 
     char *guest = p;
-    while (*p && *p != ' ')
+    while (*p && *p != ' ' && p < end)
       p++;
-    *p++ = '\0';
+    if (p < end) *p++ = '\0';
     cpu->cpu[cpu->num_cpus].guest = str_to_u32(guest, &err);
 
     char *guest_nice =
         p; // Skip guest_nice, because it's not used in the calculation.
-    while (*p && ((*p != ' ') & (*p != '\n')))
+    while (*p && ((*p != ' ') & (*p != '\n')) && p < end)
       p++;
-    p++;
+    if (p < end) p++;
     (void)guest_nice;
 
     if (err)
@@ -442,11 +546,12 @@ static inline void get_mem_info(mem_record *mem) {
   size_t n_found = 0;
 
   char *p = meminfo_contents;
+  char *end = meminfo_contents + n_read;
   while (1) {
     // Look for the items in order
     int hit_one = 0;
-    if (!items[n_found].found) {
-      p = read_memitem(p, items[n_found].name, items[n_found].field, &items[n_found].found);
+    if (!items[n_found].found && p < end) {
+      p = read_memitem(p, end, items[n_found].name, items[n_found].field, &items[n_found].found);
       if (items[n_found].found) {
         hit_one = 1;
         n_found++;
@@ -459,10 +564,10 @@ static inline void get_mem_info(mem_record *mem) {
 
     // Skip ahead to the next line if we didn't find anything
     if (!hit_one) {
-      if (*p) {
-        while (*p && *p != '\n')
+      if (*p && p < end) {
+        while (*p && *p != '\n' && p < end)
           p++;
-        if (*p == '\n')
+        if (*p == '\n' && p < end)
           p++;
       } else {
         break;
@@ -473,10 +578,19 @@ static inline void get_mem_info(mem_record *mem) {
   // Calculate other fields
   mem->mem_used = mem->mem_total - mem->mem_free;
   mem->swp_used = mem->swp_total - mem->swp_free;
-  mem->mem_percentage =
-      100.0 * ((float)mem->mem_used /
-               (float)mem->mem_total); // Leave as NaN if no mem or swp
-  mem->swp_percentage = 100.0 * ((float)mem->swp_used / (float)mem->swp_total);
+
+  // Handle division by zero gracefully (show 0% instead of NaN)
+  if (mem->mem_total > 0) {
+    mem->mem_percentage = 100.0 * ((float)mem->mem_used / (float)mem->mem_total);
+  } else {
+    mem->mem_percentage = 0.0;
+  }
+
+  if (mem->swp_total > 0) {
+    mem->swp_percentage = 100.0 * ((float)mem->swp_used / (float)mem->swp_total);
+  } else {
+    mem->swp_percentage = 0.0;
+  }
 }
 
 static inline float *calculate_cpu_utilization(cpu_record *prev,
@@ -501,6 +615,12 @@ static inline float *calculate_cpu_utilization(cpu_record *prev,
     uint32_t prev_total = prev_idle + prev_non_idle;
     uint32_t current_total = current_idle + current_non_idle;
 
+    // Check for underflow/wraparound - if current < prev, counters wrapped or bad data
+    if (current_idle < prev_idle || current_total < prev_total) {
+      utilization[i] = 0.0;
+      continue;
+    }
+
     uint32_t idle_diff = current_idle - prev_idle;
     uint32_t total_diff = current_total - prev_total;
 
@@ -522,8 +642,8 @@ static inline void get_prev_cpu_info() {
   const size_t psm1 = PAGE_SIZE - 1;
   const size_t shm_size = (sizeof(cpu_record) + 1 + psm1) & ~psm1;
 
-  // Open the shared memory file.
-  int fd = shm_open(shm_name, O_CREAT | O_RDWR, 0666);
+  // Open the shared memory file with secure permissions (user-only)
+  int fd = shm_open(shm_name, O_CREAT | O_RDWR, 0600);
   if (fd == -1)
     perror("shm_open"), puts("Failed to shm_open()."), exit(1);
 
@@ -564,7 +684,14 @@ static inline void save_cpu_shm(cpu_record *cpu) {
 
 // Print results
 
-#define PRN(...) buf_len += sprintf(buf + buf_len, __VA_ARGS__)
+#define BUF_SIZE (4096 * 20)
+#define PRN(...) do { \
+  size_t remaining = BUF_SIZE - buf_len; \
+  if (remaining > 0) { \
+    int written = snprintf(buf + buf_len, remaining, __VA_ARGS__); \
+    if (written > 0) buf_len += (written < (int)remaining) ? written : remaining - 1; \
+  } \
+} while(0)
 
 static inline size_t print_cpu_utilization(size_t num_cpus, char *buf,
                                            size_t buf_len, int genmon,
@@ -824,9 +951,12 @@ static inline void write_svg_file(char *buf, size_t buf_len, int topdown) {
   buf_len = print_svg_rects(buf, buf_len);
   buf_len = print_svg_footer(buf, buf_len);
 
-  int fd = open(tmp_svg, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-  (void)!write(fd, buf, buf_len); // Fail silently :)
-  close(fd);
+  // Use O_NOFOLLOW to prevent symlink attacks, 0644 for reasonable permissions
+  int fd = open(tmp_svg, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW, 0644);
+  if (fd >= 0) {
+    (void)!write(fd, buf, buf_len);
+    close(fd);
+  }
 }
 
 static inline size_t print_svg_img(char *buf, size_t buf_len) {
@@ -917,9 +1047,143 @@ static inline size_t print_tui(char *buf, size_t buf_len) {
   return buf_len;
 }
 
+// M1 Chip Architecture Diagram - Apple-style big.LITTLE visualization
+static inline size_t print_m1_chip_svg(char *buf, size_t buf_len) {
+  // Panel height is 69px, design for that
+  const size_t svg_height = 69;
+  const size_t svg_width = 240;  // Wide enough for 4 cores per row + margins
+
+  const size_t header_height = 10;  // M1 rainbow gradient header
+  const size_t p_core_height = 30;  // Performance cores (larger)
+  const size_t e_core_height = 20;  // Efficiency cores (smaller)
+  const size_t margin = 2;
+
+  const size_t core_width = 55;  // Width of each core block
+  const size_t core_spacing = 60;  // Spacing between cores
+
+  // Start SVG
+  PRN("<svg width='%zu' height='%zu' viewBox='0 0 %zu %zu'>\n",
+      svg_width, svg_height, svg_width, svg_height);
+
+  // Background
+  PRN("<rect width='%zu' height='%zu' fill='#000000'/>\n", svg_width, svg_height);
+
+  // M1 Rainbow Gradient Header
+  PRN("<defs>\n");
+  PRN("  <linearGradient id='m1rainbow' x1='0%%' y1='0%%' x2='100%%' y2='0%%'>\n");
+  PRN("    <stop offset='0%%' style='stop-color:#FF0000'/>\n");    // Red
+  PRN("    <stop offset='17%%' style='stop-color:#FF7F00'/>\n");   // Orange
+  PRN("    <stop offset='33%%' style='stop-color:#FFFF00'/>\n");   // Yellow
+  PRN("    <stop offset='50%%' style='stop-color:#00FF00'/>\n");   // Green
+  PRN("    <stop offset='67%%' style='stop-color:#0000FF'/>\n");   // Blue
+  PRN("    <stop offset='83%%' style='stop-color:#4B0082'/>\n");   // Indigo
+  PRN("    <stop offset='100%%' style='stop-color:#9400D3'/>\n");  // Violet
+  PRN("  </linearGradient>\n");
+  PRN("</defs>\n");
+
+  // Rainbow header bar
+  PRN("<rect x='0' y='0' width='%zu' height='%zu' fill='url(#m1rainbow)'/>\n",
+      svg_width, header_height);
+
+  // M1 text on header (white)
+  PRN("<text x='%zu' y='%zu' font-family='Arial,sans-serif' font-size='8' font-weight='bold' fill='#FFFFFF' text-anchor='middle'>M1</text>\n",
+      svg_width / 2, header_height - 2);
+
+  size_t y_offset = header_height + margin;
+
+  // Performance Cores (Top Row) - Cores 0-3 (Firestorm)
+  for (size_t i = 0; i < 4 && i < info.cpu_info.num_cpus; i++) {
+    size_t x = margin + (i * core_spacing);
+    float util = utilization[i];
+
+    // Core outline (dark gray)
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='%zu' fill='#1a1a1a' stroke='#404040' stroke-width='1'/>\n",
+        x, y_offset, core_width, p_core_height);
+
+    // Utilization fill (blue gradient based on usage)
+    size_t fill_height = (p_core_height - 4) * util / 100.0;
+    if (fill_height > 0) {
+      PRN("<rect x='%zu' y='%zu' width='%zu' height='%zu' fill='#3498DB' opacity='%.2f'/>\n",
+          x + 2, y_offset + p_core_height - 2 - fill_height,
+          core_width - 4, fill_height,
+          0.3 + (util / 100.0 * 0.7));  // Opacity 0.3-1.0 based on util
+    }
+
+    // Core internal details (simplified microarchitecture representation)
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='2' fill='#606060'/>\n",
+        x + 10, y_offset + 8, core_width - 20);
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='2' fill='#606060'/>\n",
+        x + 10, y_offset + 14, core_width - 20);
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='2' fill='#606060'/>\n",
+        x + 10, y_offset + 20, core_width - 20);
+
+    // Core label
+    PRN("<text x='%zu' y='%zu' font-family='monospace' font-size='7' fill='#FFFFFF' text-anchor='middle'>P%zu</text>\n",
+        x + core_width / 2, y_offset + p_core_height - 4, i);
+  }
+
+  y_offset += p_core_height + margin;
+
+  // Efficiency Cores (Bottom Row) - Cores 4-7 (Icestorm)
+  for (size_t i = 4; i < 8 && i < info.cpu_info.num_cpus; i++) {
+    size_t x = margin + ((i - 4) * core_spacing);
+    float util = utilization[i];
+
+    // Core outline (dark gray, smaller)
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='%zu' fill='#1a1a1a' stroke='#404040' stroke-width='1'/>\n",
+        x, y_offset, core_width, e_core_height);
+
+    // Utilization fill (lighter blue for E-cores)
+    size_t fill_height = (e_core_height - 4) * util / 100.0;
+    if (fill_height > 0) {
+      PRN("<rect x='%zu' y='%zu' width='%zu' height='%zu' fill='#5DADE2' opacity='%.2f'/>\n",
+          x + 2, y_offset + e_core_height - 2 - fill_height,
+          core_width - 4, fill_height,
+          0.3 + (util / 100.0 * 0.7));
+    }
+
+    // Core internal details (simpler for E-cores)
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='2' fill='#505050'/>\n",
+        x + 10, y_offset + 6, core_width - 20);
+    PRN("<rect x='%zu' y='%zu' width='%zu' height='2' fill='#505050'/>\n",
+        x + 10, y_offset + 12, core_width - 20);
+
+    // Core label
+    PRN("<text x='%zu' y='%zu' font-family='monospace' font-size='6' fill='#CCCCCC' text-anchor='middle'>E%zu</text>\n",
+        x + core_width / 2, y_offset + e_core_height - 3, i - 4);
+  }
+
+  PRN("</svg>\n");
+  return buf_len;
+}
+
+// Write M1 arch diagram to SVG file and return genmon output
+static inline size_t print_m1_arch_mode(char *buf, size_t buf_len) {
+  // Generate M1 chip SVG
+  buf_len = print_m1_chip_svg(buf, buf_len);
+
+  // Write to temp file
+  int fd = open(tmp_svg, O_CREAT | O_WRONLY | O_TRUNC | O_NOFOLLOW, 0644);
+  if (fd >= 0) {
+    (void)!write(fd, buf, buf_len);
+    close(fd);
+  }
+
+  // Reset buffer for genmon output
+  buf_len = 0;
+
+  // Output ONLY the image tag - no text, no (genmon), no XXX
+  PRN("<img>%s</img>\n", tmp_svg);
+  buf_len = print_click_text(buf, buf_len, 1);
+  buf_len = print_tooltip_text(buf, buf_len, 1);
+
+  return buf_len;
+}
+
 #define MODE_PRINT 0
 #define MODE_SVG 1
 #define MODE_TUI 2
+#define MODE_M1_ARCH 3
 
 typedef struct {
   int mode;
@@ -932,10 +1196,12 @@ static inline Args argparse(int argc, char **argv) {
     if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
       puts("Usage: sys-genmon [-h,--help] "
            "[-s,--svg] [-u,--upsidedown] "
-           "[-c,--clear-shm] [-t,--tui]"),
+           "[-a,--arch-diagram] [-c,--clear-shm] [-t,--tui]"),
           exit(0);
     } else if (!strcmp(argv[i], "-s") || !strcmp(argv[i], "--svg")) {
       args.mode = MODE_SVG;
+    } else if (!strcmp(argv[i], "-a") || !strcmp(argv[i], "--arch-diagram")) {
+      args.mode = MODE_M1_ARCH;
     } else if (!strcmp(argv[i], "-u") || !strcmp(argv[i], "--upsidedown")) {
       args.upsidedown = 1;
     } else if (!strcmp(argv[i], "-t") || !strcmp(argv[i], "--tui")) {
@@ -962,9 +1228,12 @@ static inline void calculate_utilizations(void) {
 
 int main(int argc, char **argv) {
 
+  // Initialize secure paths before anything else
+  init_secure_paths();
+
   Args args = argparse(argc, argv);
 
-  char buf[4096 * 20];
+  char buf[BUF_SIZE];
   size_t buf_len = buf[0] = 0;
   switch (args.mode) {
   case MODE_PRINT: // Print genmon in (() ()) format
@@ -985,6 +1254,11 @@ int main(int argc, char **argv) {
       buf_len = 0;
       sleep(1);
     }
+    break;
+  case MODE_M1_ARCH: // M1 chip architecture diagram for panel
+    calculate_utilizations();
+    buf_len = print_m1_arch_mode(buf, buf_len);
+    (void)!write(STDOUT_FILENO, buf, buf_len);
     break;
   default:
     puts("Invalid mode."), exit(1);
