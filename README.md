@@ -14,7 +14,9 @@
 | Green              | GPU SM Utilization     |
 | Yellow-Green       | GPU memory utilization |
 
-Only Nvidia GPUs are supported at the moment, as I don't have one to test with. AMD would be red :). Contributions welcome.
+Only Nvidia GPUs are supported at the moment, as I don't have one to test with. AMD would be red :)
+
+Contributions welcome.
 
 </div>
 
@@ -22,4 +24,9 @@ Only Nvidia GPUs are supported at the moment, as I don't have one to test with. 
 
 1. Compile `sys-genmon.c`. You can use `./build.sh`, or do it yourself, it's just one file.
 2. Create an xfce4-genmon plugin on your panel. My panel is horizontal, with size 26.
-3. Set the plugin to execute `/path/to/binary -t -s -p`. You can use `--help` to see what the options do, or read the code for yourself.
+3. Set the plugin to execute `/path/to/binary -s`. You can use `--help` to see what the options do, or read the code for yourself.
+
+```
+apaz[x][master][~/git/sys-genmon]$ ./sys-genmon --help 
+Usage: sys-genmon [-h,--help] [-s,--svg] [-u,--upsidedown] [-c,--clear-shm] [-t,--tui]
+```
