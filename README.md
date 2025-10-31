@@ -1,32 +1,23 @@
-
 # sys-genmon 
 # raccoon edition
 
-<div align='center'>
+<div align="center">
 
-## A beautiful Apple M1 chip monitor for XFCE4 Panel, 
+## A beautiful Apple M1 chip monitor for XFCE4 Panel
 
-<img src='genmon_bars.png'>
+<img src='genmon_bars.png' width='600'>
+
+### Original genmon.
+
+<img src='s1.png' width='600'>
+
+### Raccoon Edition in a vertical deskbar config
+
+<img src='s2.png' width='600'>
+
+### Traditional deskbar config
 
 Real-time visualization of Apple Silicon big.LITTLE architecture with per-core CPU utilization.
-
-**Features:**
-- 🌈 **Dynamic rainbow header** that shifts red when CPU is hot
-- ⚡ **Performance cores** (4 cores) - Tall boxes with 5 vertical lines
-- 🔋 **Efficiency cores** (4 cores) - Smaller boxes with 3 horizontal lines
-- 📊 **Real-time utilization** - Animated blue fills show per-core load
-- 🎨 **Transparent design** - Blends beautifully with any panel theme
-
-**Supported Hardware:**
-- ✅ **Apple M1** (4P + 4E cores) - Fully tested
-- ✅ **Apple M2** (4P + 4E cores) - Should work
-- ✅ **Apple M3** (4P + 4E cores) - Should work
-- 🔜 **M1 Pro/Max/Ultra** - Coming soon (needs layout adjustments)
-
-**Platform:**
-- Alpine Linux with Asahi kernel (tested on 6.16+)
-- XFCE4 desktop environment
-- ARM64 architecture
 
 </div>
 
@@ -386,7 +377,7 @@ This project follows secure coding practices:
 
 ## License
 
-Apache License 2.0 - See LICENSE file for details.
+Apache License 2.0 - Go crazy!
 
 ---
 
@@ -416,3 +407,15 @@ Contributions welcome! Areas for improvement:
 - XFCE4 panel integration
 - Transparent design
 - big.LITTLE architecture display (5 vertical lines for P-cores, 3 horizontal for E-cores)
+
+
+## UPCOMING 
+
+### Ability to visualize a heatmap of up to 144 cores, stay tuned :)
+
+
+
+
+Cheers, 
+
+Nisten
